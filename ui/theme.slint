@@ -1,0 +1,155 @@
+// slidetrace 主题与共享类型。
+// 所有 UI 文案使用中文；颜色集中在这里，方便统一调整。
+
+export enum AppMode {
+    create,     // 制作
+    rehearse,   // 演练
+    review,     // 回放
+    present,    // 演讲
+}
+
+export enum CanvasTool {
+    select,
+    text,
+    image,
+}
+
+// 画面上一个元素的渲染描述（由 Rust 根据 state_at(t) 计算后填充）。
+export struct ElementVisual {
+    id: string,
+    // "text" | "image" | "shape"
+    kind: string,
+    text: string,
+    image: image,
+    has-image: bool,
+    x: length,
+    y: length,
+    w: length,
+    h: length,
+    color: color,
+    background: color,
+    has-background: bool,
+    font-size: length,
+    bold: bool,
+    // 0=左 1=中 2=右
+    align: int,
+    selected: bool,
+    // Create 模式下"默认隐藏"的元素会画成虚线框，提示它会由快捷键触发
+    ghost: bool,
+    // 演练模式下的数字键提示（"1".."9"），"" 表示不显示
+    trigger-label: string,
+    // 只画"这里将会出现一个元素"的提示框，不画内容本身
+    hint-only: bool,
+}
+
+// 一条笔迹的渲染描述。`d` 是**只包含当前时刻之前那些点**的 SVG path，
+// 因此"播放进度 = 笔迹绘制进度"是天然成立的。
+export struct StrokeVisual {
+    id: string,
+    d: string,
+    color: color,
+    width: length,
+}
+
+// 时间轴上的一个事件刻度（x 为 0..1 的归一化位置）。
+export struct EventTick {
+    x: float,
+    kind: string,
+}
+
+export struct ScriptRow {
+    text: string,
+    time-label: string,
+    page-label: string,
+    has-time: bool,
+    current: bool,
+    // 演练模式下点击这一行会给它打时间锚点
+    markable: bool,
+}
+
+export struct PageRow {
+    name: string,
+    index: int,
+    current: bool,
+    element-count: int,
+}
+
+export global Theme {
+    // 深色底 + 浅色画布：画布本身是"纸"，UI 是"桌面"
+    in-out property <color> bg: #12151c;
+    in-out property <color> panel: #1a1f28;
+    in-out property <color> panel-2: #232a35;
+    in-out property <color> line: #333c4a;
+    in-out property <color> text: #e7ecf3;
+    in-out property <color> text-dim: #96a1b3;
+    in-out property <color> accent: #4c8dff;
+    in-out property <color> accent-2: #22c55e;
+    in-out property <color> danger: #ef4444;
+    in-out property <color> warn: #f59e0b;
+    in-out property <color> stage: #f7f8fa;
+    in-out property <color> stroke-default: #e11d48;
+}
+
+// 一个朴素的按钮：默认/选中/强调三种状态。
+export component ChipButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    in property <bool> enabled: true;
+    in property <color> tint: Theme.panel-2;
+    in property <length> pad: 12px;
+    callback clicked;
+
+    height: max(26px, labelText.preferred-height + 10px);
+    width: labelText.preferred-width + pad * 2;
+    border-radius: 6px;
+    border-width: active ? 1px : 0px;
+    border-color: Theme.accent;
+    background: !enabled ? Theme.panel : (active ? Theme.accent : (tap.pressed && tap.has-hover ? Theme.line : tint));
+    opacity: enabled ? 1.0 : 0.45;
+    animate background { duration: 90ms; }
+
+    labelText := Text {
+        text: root.label;
+        color: active ? #ffffff : Theme.text;
+        font-size: 13px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        x: root.pad;
+        width: root.width - root.pad * 2;
+        height: root.height;
+    }
+    tap := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// 四角括号：标记"这里有一个元素，但它在录制时才会出现"。
+//
+// 之所以不用虚线框：Slint 的 Rectangle 没有虚线边框，画成实线又会被误读成
+// 元素自己的样式。四角括号语义更明确，也不会和元素内容混淆。
+export component BracketFrame inherits Rectangle {
+    in property <color> tint: Theme.text-dim;
+    in property <length> arm: 14px;
+    in property <length> thick: 2px;
+
+    background: transparent;
+
+    Rectangle { x: 0; y: 0; width: arm; height: thick; background: tint; }
+    Rectangle { x: 0; y: 0; width: thick; height: arm; background: tint; }
+    Rectangle { x: parent.width - arm; y: 0; width: arm; height: thick; background: tint; }
+    Rectangle { x: parent.width - thick; y: 0; width: thick; height: arm; background: tint; }
+    Rectangle { x: 0; y: parent.height - thick; width: arm; height: thick; background: tint; }
+    Rectangle { x: 0; y: parent.height - arm; width: thick; height: arm; background: tint; }
+    Rectangle { x: parent.width - arm; y: parent.height - thick; width: arm; height: thick; background: tint; }
+    Rectangle { x: parent.width - thick; y: parent.height - arm; width: thick; height: arm; background: tint; }
+}
+
+// 小节标题
+export component SectionLabel inherits Text {
+    color: Theme.text-dim;
+    font-size: 11px;
+    letter-spacing: 0.6px;
+    vertical-alignment: center;
+}

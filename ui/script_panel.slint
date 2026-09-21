@@ -1,0 +1,170 @@
+// 讲稿面板：Full / Prompt / Minimal 三档切换 + 点击段落跳转。
+//
+// "点击某一段 → 若有 reveal_time 就 seek 到那一刻" 是本产品的核心交互之一
+// （SPEC §20），因此每一行都是可点击的，并在右侧显示该段的实际讲话时间。
+
+import { Theme, ScriptRow, ChipButton, SectionLabel } from "theme.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export component ScriptPanel inherits Rectangle {
+    in property <[ScriptRow]> rows: [];
+    // 0=完整 1=提示 2=关键词
+    in-out property <int> level: 0;
+    in-out property <bool> open: true;
+    // 演练模式：点击某一行 = 给这一行打时间锚点
+    in property <bool> can-mark: false;
+
+    callback row-click(int);
+    callback set-level(int);
+    callback toggle();
+
+    background: Theme.panel;
+    border-width: 1px;
+    border-color: Theme.line;
+
+    VerticalLayout {
+        padding: 0;
+        spacing: 0;
+
+        // ---------- 标题栏 ----------
+        Rectangle {
+            height: 34px;
+            background: Theme.panel;
+
+            SectionLabel {
+                x: 12px;
+                y: 0;
+                height: parent.height;
+                text: "讲稿  SCRIPT";
+            }
+
+            HorizontalLayout {
+                x: 110px;
+                y: 4px;
+                height: 26px;
+                spacing: 4px;
+                alignment: start;
+
+                ChipButton {
+                    label: "完整";
+                    active: root.level == 0;
+                    clicked => { root.set-level(0); }
+                }
+                ChipButton {
+                    label: "提示";
+                    active: root.level == 1;
+                    clicked => { root.set-level(1); }
+                }
+                ChipButton {
+                    label: "关键词";
+                    active: root.level == 2;
+                    clicked => { root.set-level(2); }
+                }
+            }
+
+            Text {
+                x: parent.width - self.preferred-width - 96px;
+                y: 0;
+                height: parent.height;
+                width: self.preferred-width;
+                text: root.can-mark ? "点击某句 → 标记讲话时间" : "点击某句 → 跳转音频";
+                color: Theme.text-dim;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+
+            Rectangle {
+                x: parent.width - 88px;
+                y: 5px;
+                width: 76px;
+                height: 24px;
+                border-radius: 6px;
+                background: Theme.panel-2;
+                Text {
+                    text: root.open ? "收起 ▲" : "展开 ▼";
+                    color: Theme.text;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: parent.width;
+                    height: parent.height;
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.toggle(); }
+                }
+            }
+        }
+
+        // ---------- 讲稿内容 ----------
+        if root.open : sv := ScrollView {
+            vertical-stretch: 1;
+
+            rows-layout := VerticalLayout {
+                // 显式绑定到 ScrollView 的宽度（而不是 parent），避免与
+                // flickable 的内容宽度互相依赖形成绑定环
+                width: sv.width - 14px;
+                padding-top: 6px;
+                padding-bottom: 8px;
+                spacing: 3px;
+
+                if root.rows.length == 0 : Text {
+                    text: "还没有讲稿。切到「制作」模式后可以在这里写讲稿。";
+                    color: Theme.text-dim;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    height: 40px;
+                    vertical-alignment: center;
+                }
+
+                for row[idx] in root.rows : Rectangle {
+                    height: root.level == 0 ? 46px : 34px;
+                    background: row.current ? Theme.panel-2 : transparent;
+                    border-radius: 5px;
+                    border-width: row.current ? 1px : 0px;
+                    border-color: Theme.accent;
+
+                    // 当前段落左侧的强调条
+                    Rectangle {
+                        x: 0;
+                        y: 4px;
+                        width: 3px;
+                        height: parent.height - 8px;
+                        background: row.current ? Theme.accent : transparent;
+                        border-radius: 2px;
+                    }
+
+                    Text {
+                        x: 12px;
+                        y: 4px;
+                        width: parent.width - (row.has-time ? 104px : 20px);
+                        height: parent.height - 8px;
+                        text: row.text;
+                        color: row.current ? Theme.text : Theme.text-dim;
+                        font-size: root.level == 0 ? 14px : 15px;
+                        font-weight: row.current ? 600 : 400;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                    }
+
+                    if row.has-time : Text {
+                        x: parent.width - 92px;
+                        y: 4px;
+                        width: 84px;
+                        height: parent.height - 8px;
+                        text: row.time-label;
+                        color: Theme.accent-2;
+                        font-size: 12px;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                    }
+
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.row-click(idx); }
+                    }
+                }
+            }
+        }
+    }
+}

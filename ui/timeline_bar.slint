@@ -1,0 +1,197 @@
+// 时间轴：事件刻度 + 波形 + 播放头拖动。
+//
+// 波形用一条**填充包络 Path**绘制（而不是几百个矩形）：`d` 由 Rust 从 WAV
+// 降采样后一次性生成，viewbox 固定为 0..100 × 0..100，`fit: fill`。
+// 事件刻度与播放头是普通 Rectangle，直接按像素定位。
+
+import { Theme, EventTick, ChipButton, SectionLabel } from "theme.slint";
+
+export component TimelineBar inherits Rectangle {
+    in property <[EventTick]> ticks: [];
+    // 波形包络的 SVG path（Rust 生成）
+    in property <string> wave-path: "";
+    in property <bool> has-audio: false;
+    in property <bool> playing: false;
+    in-out property <float> position: 0;
+    in property <float> duration: 0;
+    in property <string> time-label: "00:00.0";
+    in property <string> duration-label: "00:00.0";
+    in property <string> status: "";
+    // 演练选择
+    in property <int> rehearsal-index: 0;
+    in property <int> rehearsal-count: 0;
+    in property <string> rehearsal-name: "";
+
+    callback seek(float);
+    callback play-toggle();
+    callback stop();
+    callback rehearsal-prev();
+    callback rehearsal-next();
+
+    background: Theme.panel;
+    border-width: 1px;
+    border-color: Theme.line;
+
+    VerticalLayout {
+        padding: 0;
+        spacing: 0;
+
+        // ---------- 控制条 ----------
+        Rectangle {
+            height: 32px;
+            background: Theme.panel;
+
+            SectionLabel {
+                x: 12px;
+                y: 0;
+                height: parent.height;
+                text: "时间轴  TIMELINE";
+            }
+
+            HorizontalLayout {
+                x: 130px;
+                y: 3px;
+                height: 26px;
+                spacing: 6px;
+                alignment: start;
+
+                ChipButton {
+                    label: root.playing ? "⏸ 暂停" : "▶ 播放";
+                    active: root.playing;
+                    clicked => { root.play-toggle(); }
+                }
+                ChipButton {
+                    label: "⏮ 回到开头";
+                    clicked => { root.stop(); }
+                }
+            }
+
+            // 演练选择
+            if root.rehearsal-count > 0 : HorizontalLayout {
+                x: 340px;
+                y: 3px;
+                height: 26px;
+                spacing: 4px;
+                alignment: start;
+
+                ChipButton {
+                    label: "◀";
+                    enabled: root.rehearsal-index > 0;
+                    pad: 8px;
+                    clicked => { root.rehearsal-prev(); }
+                }
+                Text {
+                    text: root.rehearsal-name;
+                    color: Theme.text;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    width: 190px;
+                    horizontal-alignment: center;
+                }
+                ChipButton {
+                    label: "▶";
+                    enabled: root.rehearsal-index < root.rehearsal-count - 1;
+                    pad: 8px;
+                    clicked => { root.rehearsal-next(); }
+                }
+            }
+
+            // 时间
+            Text {
+                x: parent.width - self.width - 14px;
+                y: 0;
+                width: self.preferred-width;
+                height: parent.height;
+                text: root.time-label + " / " + root.duration-label;
+                color: Theme.text;
+                font-size: 13px;
+                vertical-alignment: center;
+            }
+        }
+
+        // ---------- 轨道 ----------
+        track := Rectangle {
+            vertical-stretch: 1;
+            background: Theme.bg;
+            clip: true;
+
+            property <length> head-x: root.duration > 0
+                ? (root.position / root.duration) * self.width
+                : 0px;
+
+            // 波形包络
+            if root.wave-path != "" : Path {
+                x: 0;
+                y: 6px;
+                width: track.width;
+                height: track.height - 22px;
+                viewbox-x: 0;
+                viewbox-y: 0;
+                viewbox-width: 1000;
+                viewbox-height: 100;
+                fit: fill;
+                commands: root.wave-path;
+                fill: root.has-audio ? #2f5d9e : #3b4250;
+                stroke: transparent;
+            }
+            if root.wave-path == "" : Text {
+                text: root.status;
+                color: Theme.text-dim;
+                font-size: 12px;
+                width: track.width;
+                height: track.height;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            // 事件刻度
+            for t in root.ticks : Rectangle {
+                x: root.duration > 0 ? (t.x * track.width) : 0px;
+                y: 2px;
+                width: 2px;
+                height: track.height - 18px;
+                background: t.kind == "page" ? Theme.accent
+                    : (t.kind == "script" ? Theme.accent-2
+                    : (t.kind == "hide" ? Theme.danger
+                    : (t.kind == "marker" ? Theme.warn : #9db8e8)));
+                opacity: 0.9;
+            }
+
+            // 播放头
+            Rectangle {
+                x: min(max(track.head-x - 1px, 0px), track.width - 2px);
+                y: 0;
+                width: 2px;
+                height: track.height;
+                background: Theme.danger;
+            }
+            Rectangle {
+                x: min(max(track.head-x - 5px, 0px), track.width - 10px);
+                y: 0;
+                width: 10px;
+                height: 10px;
+                border-radius: 3px;
+                background: Theme.danger;
+            }
+
+            // 拖动定位
+            scrub := TouchArea {
+                mouse-cursor: pointer;
+                pointer-event(e) => {
+                    if (e.button == PointerEventButton.left || e.button == PointerEventButton.other) {
+                        if (e.kind == PointerEventKind.down || e.kind == PointerEventKind.up) {
+                            if (root.duration > 0) {
+                                root.seek(max(0.0, min(1.0, scrub.mouse-x / scrub.width)) * root.duration);
+                            }
+                        }
+                    }
+                }
+                moved => {
+                    if (root.duration > 0) {
+                        root.seek(max(0.0, min(1.0, scrub.mouse-x / scrub.width)) * root.duration);
+                    }
+                }
+            }
+        }
+    }
+}

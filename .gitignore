@@ -1,0 +1,7 @@
+/target
+/smoke_root
+/shots
+*.tmp
+
+/.openclaw-verify
+

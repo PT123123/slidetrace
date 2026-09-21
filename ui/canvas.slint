@@ -1,0 +1,290 @@
+// 画布：元素渲染 + 笔迹 Path 绘制 + 鼠标交互。
+//
+// 坐标系约定：Rust 传进来的一切几何量都是**页面坐标系**（默认 1280×720），
+// 画布在内部统一做 letterbox 变换（等比缩放 + 居中）。
+// 鼠标事件也在这里反变换回页面坐标后再交给 Rust，
+// 保证"元素位置 / 笔迹坐标 / 鼠标坐标"三者永远在同一坐标系里。
+
+import { Theme, ElementVisual, StrokeVisual, BracketFrame } from "theme.slint";
+import { LineEdit } from "std-widgets.slint";
+
+export component Canvas inherits Rectangle {
+    in property <length> page-w: 1280px;
+    in property <length> page-h: 720px;
+    in property <[ElementVisual]> elements: [];
+    in property <[StrokeVisual]> strokes: [];
+    in property <bool> interactive: true;
+    // 录制中：鼠标拖动 = 手写
+    in property <bool> can-draw: false;
+    in property <string> empty-hint: "";
+
+    // 文本编辑浮层
+    in property <string> editing-id: "";
+    in-out property <string> editing-text: "";
+    in property <length> edit-x: 0px;
+    in property <length> edit-y: 0px;
+    in property <length> edit-w: 0px;
+    in property <length> edit-h: 0px;
+
+    callback canvas-pointer(string, length, length);
+    callback edit-commit(string, string);
+    callback edit-cancel();
+    callback double-clicked();
+
+    background: Theme.bg;
+    clip: true;
+
+    // ---------- letterbox 变换（唯一一处，全局复用） ----------
+    property <float> sc: min(self.width / page-w, self.height / page-h);
+    property <length> cw: page-w * sc;
+    property <length> ch: page-h * sc;
+    property <length> cx: (self.width - cw) / 2;
+    property <length> cy: (self.height - ch) / 2;
+
+    // 页面（白纸）
+    stage := Rectangle {
+        x: root.cx;
+        y: root.cy;
+        width: root.cw;
+        height: root.ch;
+        background: Theme.stage;
+        clip: true;
+
+        // ---------- 元素 ----------
+        for el in root.elements : Rectangle {
+            x: el.x * root.sc;
+            y: el.y * root.sc;
+            width: el.w * root.sc;
+            height: el.h * root.sc;
+            background: el.has-background ? el.background : transparent;
+            border-radius: 3px;
+
+            // 演练时"还没出现"的元素：只画一个占位框 + 数字键提示，
+            // 让用户一眼看到"按 1/2/3 会让什么出现"，同时不剧透内容
+            if el.hint-only : BracketFrame {
+                x: 0;
+                y: 0;
+                width: el.w * root.sc;
+                height: el.h * root.sc;
+                tint: #7c8899;
+                opacity: 0.75;
+            }
+            if !el.hint-only && el.kind == "text" : Text {
+                text: el.text;
+                color: el.color;
+                font-size: max(6px, el.font-size * root.sc);
+                font-weight: el.bold ? 700 : 400;
+                wrap: word-wrap;
+                horizontal-alignment: el.align == 1 ? center : (el.align == 2 ? right : left);
+                vertical-alignment: center;
+                width: el.w * root.sc;
+                height: el.h * root.sc;
+            }
+            if !el.hint-only && el.kind == "image" && el.has-image : Image {
+                source: el.image;
+                width: el.w * root.sc;
+                height: el.h * root.sc;
+                image-fit: contain;
+            }
+            if !el.hint-only && el.kind == "shape" : Rectangle {
+                // V1 只画一个占位方框（Shape 是预留扩展位，见 README）
+                background: transparent;
+                width: el.w * root.sc;
+                height: el.h * root.sc;
+                border-width: 2px;
+                border-color: el.color;
+                border-radius: 6px;
+            }
+
+            // 默认隐藏的元素：制作模式下用四角括号提示"它会在录制时被快捷键触发"
+            if el.ghost : BracketFrame {
+                x: 0;
+                y: 0;
+                width: el.w * root.sc;
+                height: el.h * root.sc;
+                tint: #9aa4b2;
+            }
+
+            // 选中框
+            if el.selected : Rectangle {
+                x: 0;
+                y: 0;
+                width: el.w * root.sc;
+                height: el.h * root.sc;
+                background: transparent;
+                border-width: 2px;
+                border-color: Theme.accent;
+                border-radius: 2px;
+            }
+
+            // 演练时的快捷键提示（1-9 / 空格）
+            if el.trigger-label != "" : Rectangle {
+                x: max(0px, el.w * root.sc - 24px);
+                y: 2px;
+                width: 22px;
+                height: 18px;
+                background: Theme.warn;
+                border-radius: 9px;
+                opacity: 0.95;
+                Text {
+                    text: el.trigger-label;
+                    color: #1a1f28;
+                    font-size: 11px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 22px;
+                    height: 18px;
+                }
+            }
+        }
+
+        // ---------- 笔迹（画在元素之上） ----------
+        // viewbox 就是页面坐标系，因此笔迹与元素永远对齐；
+        // `d` 由 Rust 按当前时间 t 截断，绘制进度天然等于播放进度。
+        for st in root.strokes : Path {
+            x: 0;
+            y: 0;
+            width: root.cw;
+            height: root.ch;
+            viewbox-x: 0;
+            viewbox-y: 0;
+            viewbox-width: root.page-w / 1px;
+            viewbox-height: root.page-h / 1px;
+            fit: fill;
+            commands: st.d;
+            stroke: st.color;
+            stroke-width: st.width;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+            fill: transparent;
+        }
+    }
+
+    // 页面外框
+    Rectangle {
+        x: root.cx - 1px;
+        y: root.cy - 1px;
+        width: root.cw + 2px;
+        height: root.ch + 2px;
+        background: transparent;
+        border-width: 1px;
+        border-color: Theme.line;
+    }
+
+    // 空项目提示
+    if root.elements.length == 0 && root.empty-hint != "" : Text {
+        text: root.empty-hint;
+        color: Theme.text-dim;
+        font-size: 15px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: root.width;
+        height: root.height;
+    }
+
+    // ---------- 交互层 ----------
+    // 位置换算集中在这里：屏幕 px → 页面坐标
+    tap := TouchArea {
+        x: root.cx;
+        y: root.cy;
+        width: root.cw;
+        height: root.ch;
+        enabled: root.interactive;
+        mouse-cursor: root.can-draw ? crosshair : default;
+
+        pointer-event(e) => {
+            if (e.button == PointerEventButton.left || e.button == PointerEventButton.other) {
+                if (e.kind == PointerEventKind.down) {
+                    root.canvas-pointer("down", tap.mouse-x / root.sc, tap.mouse-y / root.sc);
+                } else if (e.kind == PointerEventKind.up) {
+                    root.canvas-pointer("up", tap.mouse-x / root.sc, tap.mouse-y / root.sc);
+                }
+            }
+        }
+        moved => {
+            root.canvas-pointer("move", tap.mouse-x / root.sc, tap.mouse-y / root.sc);
+        }
+        double-clicked => { root.double-clicked(); }
+    }
+
+    // ---------- 文本编辑浮层 ----------
+    if root.editing-id != "" : Rectangle {
+        x: root.cx + root.edit-x * root.sc - 6px;
+        y: root.cy + root.edit-y * root.sc - 6px;
+        width: max(root.edit-w * root.sc + 12px, 300px);
+        height: root.edit-h * root.sc + 46px;
+        background: Theme.panel;
+        border-radius: 8px;
+        border-width: 2px;
+        border-color: Theme.accent;
+        drop-shadow-blur: 14px;
+        drop-shadow-color: #00000066;
+
+        // 用 FocusScope + forward-focus 把键盘焦点交给 LineEdit（LineEdit 自己
+        // 不是 FocusScope，只能这样程序化聚焦）
+        edit-scope := FocusScope {
+            forward-focus: editor;
+            init => { edit-scope.focus(); }
+
+            editor := LineEdit {
+                x: 6px;
+                y: 6px;
+                width: parent.width - 12px;
+                height: parent.height - 46px;
+                text <=> root.editing-text;
+                font-size: 14px;
+                horizontal-alignment: left;
+                accepted(t) => {
+                    root.edit-commit(root.editing-id, t);
+                }
+            }
+        }
+        HorizontalLayout {
+            y: parent.height - 34px;
+            x: 6px;
+            width: parent.width - 12px;
+            height: 30px;
+            alignment: end;
+            spacing: 6px;
+            Rectangle {
+                width: 64px;
+                height: 26px;
+                border-radius: 6px;
+                background: Theme.accent;
+                Text {
+                    text: "完成";
+                    color: #ffffff;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: parent.width;
+                    height: parent.height;
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.edit-commit(root.editing-id, editor.text); }
+                }
+            }
+            Rectangle {
+                width: 64px;
+                height: 26px;
+                border-radius: 6px;
+                background: Theme.panel-2;
+                Text {
+                    text: "取消";
+                    color: Theme.text;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: parent.width;
+                    height: parent.height;
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.edit-cancel(); }
+                }
+            }
+        }
+    }
+}

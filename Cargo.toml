@@ -1,0 +1,33 @@
+[package]
+name = "slidetrace"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "以讲话时间为主轴的演讲创作与演练工作台"
+license = "MIT"
+default-run = "slidetrace"
+
+[dependencies]
+slint = "1.18.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dirs = "7.0"
+# 录音用 cpal。这里刻意选 0.17 而不是 0.18：rodio 0.22 内部依赖 cpal 0.17，
+# 统一版本可以避免同一进程加载两份 WASAPI 后端（详见 README「技术坑」）。
+cpal = "0.17"
+hound = "3.5"
+# rodio 0.22 的默认特性会拉入 symphonia（mp3/flac/mp4/vorbis）。
+# 我们只需要播放 + WAV 解码，用 hound 后端（与上面的 hound 复用同一份依赖），
+# 且 hound 后端解码的 Source 原生支持 try_seek。
+rodio = { version = "0.22", default-features = false, features = ["playback", "hound"] }
+rfd = "0.17"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif"] }
+
+[build-dependencies]
+slint-build = "1.18.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 2

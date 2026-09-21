@@ -1,0 +1,541 @@
+// slidetrace 主窗口。
+//
+// 布局遵循 SPEC §22：默认只有 顶栏 / 画布 / 讲稿 / 时间轴 四块，
+// Inspector 等高级面板默认折叠、按需展开。
+// 演讲模式（Present）进一步收缩为 画布 + 必要控制。
+
+import { Theme, ChipButton, SectionLabel, AppMode, CanvasTool, ElementVisual, StrokeVisual, EventTick, ScriptRow, PageRow } from "theme.slint";
+import { Canvas } from "canvas.slint";
+import { ScriptPanel } from "script_panel.slint";
+import { TimelineBar } from "timeline_bar.slint";
+import { ScrollView } from "std-widgets.slint";
+// 顶栏上的 Record 按钮：全应用最显眼的控件。
+component RecordButton inherits Rectangle {
+    in property <bool> recording: false;
+    in property <bool> dimmed: false;
+    in property <string> label: "● 开始录制";
+    callback toggled;
+
+    width: 210px;
+    height: 32px;
+    border-radius: 8px;
+    opacity: dimmed ? 0.0 : 1.0;
+    background: recording ? Theme.danger : (tap.pressed ? #b91c1c : #dc2626);
+
+    Text {
+        text: root.label;
+        color: #ffffff;
+        font-size: 13px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+    tap := TouchArea {
+        enabled: !root.dimmed;
+        mouse-cursor: pointer;
+        clicked => { root.toggled(); }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "slidetrace — 以讲话时间为主轴的演讲工作台";
+    width: 1440px;
+    height: 920px;
+    background: Theme.bg;
+
+    // ================= 全局状态 =================
+    in-out property <AppMode> mode: AppMode.create;
+    in-out property <bool> recording: false;
+    in-out property <bool> playing: false;
+    in-out property <bool> inspector-open: false;
+    in-out property <string> status: "就绪";
+
+    // ================= 顶栏 =================
+    in-out property <string> project-name: "未命名项目";
+    in property <[string]> project-names: [];
+    in-out property <int> project-index: -1;
+    in property <string> record-label: "● 开始录制（Ctrl+R）";
+
+    // ================= 页面 =================
+    in property <[PageRow]> pages: [];
+    in-out property <int> current-page: 0;
+
+    // ================= 画布 =================
+    in property <[ElementVisual]> elements: [];
+    in property <[StrokeVisual]> strokes: [];
+    in property <length> page-w: 1280px;
+    in property <length> page-h: 720px;
+    in-out property <CanvasTool> tool: CanvasTool.select;
+    in property <bool> can-draw: false;
+    in property <bool> canvas-interactive: true;
+    in property <string> canvas-hint: "";
+    in property <string> selected-id: "";
+
+    // 文本编辑浮层（几何量为页面坐标）
+    in-out property <string> editing-id: "";
+    in-out property <string> editing-text: "";
+    in property <length> edit-x: 0px;
+    in property <length> edit-y: 0px;
+    in property <length> edit-w: 0px;
+    in property <length> edit-h: 0px;
+
+    // ================= 讲稿 =================
+    in property <[ScriptRow]> script-rows: [];
+    in-out property <int> script-level: 0;
+    in-out property <bool> script-open: true;
+
+    // ================= 时间轴 =================
+    in property <[EventTick]> ticks: [];
+    in property <string> wave-path: "";
+    in property <bool> has-audio: false;
+    in-out property <float> position: 0;
+    in property <float> duration: 0;
+    in property <string> position-label: "00:00.0";
+    in property <string> duration-label: "00:00.0";
+    in property <int> rehearsal-index: 0;
+    in property <int> rehearsal-count: 0;
+    in property <string> rehearsal-name: "";
+
+    // ================= 回调 =================
+    callback mode-request(int);
+    callback record-toggle();
+    callback play-toggle();
+    callback seek(float);
+    callback stop-playback();
+    callback toolbar(string);
+    callback canvas-pointer(string, float, float);
+    callback canvas-double-click();
+    callback edit-commit(string, string);
+    callback edit-cancel();
+    callback script-row-click(int);
+    callback script-level-set(int);
+    callback script-toggle();
+    callback page-select(int);
+    callback project-select(int);
+    callback project-new();
+    callback project-open();
+    callback rehearsal-prev();
+    callback rehearsal-next();
+    callback inspector-toggle();
+    callback delete-selected();
+    callback key-action(string, bool, bool);
+
+    // 全局快捷键。
+    // Slint 的事件传播是「焦点元素 → 逐级向上冒泡」，所以当文本输入框有焦点时
+    // 它先吃掉按键，这里的全局快捷键不会干扰打字；另外编辑中一律 reject 兜底。
+    FocusScope {
+        key-pressed(event) => {
+            if (root.editing-id != "") {
+                return reject;
+            }
+            root.key-action(event.text, event.modifiers.control, event.modifiers.shift);
+            return accept;
+        }
+    }
+
+    VerticalLayout {
+        padding: 0;
+        spacing: 0;
+
+        // ==================== 顶栏 ====================
+        Rectangle {
+            height: 50px;
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.line;
+
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                spacing: 8px;
+                alignment: start;
+
+                Text {
+                    text: "● slidetrace";
+                    color: Theme.accent;
+                    font-size: 15px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: root.project-name;
+                    color: Theme.text;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    visible: root.mode != AppMode.present;
+                }
+
+                ChipButton {
+                    label: "新建";
+                    visible: root.mode != AppMode.present;
+                    clicked => { root.project-new(); }
+                }
+                ChipButton {
+                    label: "打开…";
+                    visible: root.mode != AppMode.present;
+                    clicked => { root.project-open(); }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                Text {
+                    text: root.status;
+                    color: Theme.text-dim;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                    visible: root.mode != AppMode.present;
+                }
+
+                ChipButton {
+                    label: "✎ 制作";
+                    active: root.mode == AppMode.create;
+                    visible: root.mode != AppMode.present;
+                    clicked => { root.mode-request(0); }
+                }
+                ChipButton {
+                    label: "● 演练";
+                    active: root.mode == AppMode.rehearse;
+                    visible: root.mode != AppMode.present;
+                    clicked => { root.mode-request(1); }
+                }
+                ChipButton {
+                    label: "▶ 回放";
+                    active: root.mode == AppMode.review;
+                    visible: root.mode != AppMode.present;
+                    clicked => { root.mode-request(2); }
+                }
+                ChipButton {
+                    label: "⛶ 演讲";
+                    active: false;
+                    visible: root.mode != AppMode.present;
+                    clicked => { root.mode-request(3); }
+                }
+                ChipButton {
+                    label: "退出演讲";
+                    active: false;
+                    visible: root.mode == AppMode.present;
+                    clicked => { root.mode-request(0); }
+                }
+
+                RecordButton {
+                    recording: root.recording;
+                    dimmed: root.mode == AppMode.present;
+                    label: root.record-label;
+                    toggled => { root.record-toggle(); }
+                }
+            }
+        }
+
+        // ==================== 中部 ====================
+        HorizontalLayout {
+            vertical-stretch: 1;
+            padding: 0;
+            spacing: 0;
+
+            // ---------- 左：页面栏 ----------
+            if root.mode != AppMode.present : Rectangle {
+                width: 156px;
+                background: Theme.panel;
+                border-width: 1px;
+                border-color: Theme.line;
+
+                VerticalLayout {
+                    padding-top: 8px;
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    padding-bottom: 8px;
+                    spacing: 4px;
+
+                    SectionLabel {
+                        text: "页面  PAGES";
+                        height: 20px;
+                    }
+
+                    value := ScrollView {
+                        vertical-stretch: 1;
+
+                        page-list := VerticalLayout {
+                            width: value.width - 14px;
+                            spacing: 3px;
+
+                            for p[i] in root.pages : Rectangle {
+                                height: 46px;
+                                border-radius: 6px;
+                                background: p.current ? Theme.accent : Theme.panel-2;
+                                border-width: 1px;
+                                border-color: p.current ? Theme.accent : transparent;
+
+                                Text {
+                                    x: 8px;
+                                    y: 5px;
+                                    width: parent.width - 16px;
+                                    text: p.name;
+                                    color: p.current ? #ffffff : Theme.text;
+                                    font-size: 12px;
+                                    font-weight: p.current ? 600 : 400;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    x: 8px;
+                                    y: parent.height - 18px;
+                                    width: parent.width - 16px;
+                                    text: "元素 " + p.element-count;
+                                    color: p.current ? #dbeafe : Theme.text-dim;
+                                    font-size: 10px;
+                                }
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.page-select(i); }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.mode == AppMode.create : HorizontalLayout {
+                        height: 26px;
+                        spacing: 4px;
+                        alignment: start;
+                        ChipButton {
+                            label: "+ 页";
+                            clicked => { root.toolbar("add-page"); }
+                        }
+                        ChipButton {
+                            label: "− 页";
+                            clicked => { root.toolbar("del-page"); }
+                        }
+                    }
+                }
+            }
+
+            // ---------- 中：工具栏 + 画布 ----------
+            VerticalLayout {
+                horizontal-stretch: 1;
+                padding: 0;
+                spacing: 0;
+
+                if root.mode == AppMode.create : Rectangle {
+                    height: 34px;
+                    background: Theme.panel-2;
+
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 5px;
+                        alignment: start;
+
+                        ChipButton {
+                            label: "▣ 选择";
+                            active: root.tool == CanvasTool.select;
+                            clicked => { root.toolbar("tool-select"); }
+                        }
+                        ChipButton {
+                            label: "T 文字";
+                            active: root.tool == CanvasTool.text;
+                            clicked => { root.toolbar("tool-text"); }
+                        }
+                        ChipButton {
+                            label: "▤ 图片";
+                            active: root.tool == CanvasTool.image;
+                            clicked => { root.toolbar("tool-image"); }
+                        }
+                        ChipButton {
+                            label: "＋ 插入图片文件…";
+                            clicked => { root.toolbar("import-image"); }
+                        }
+
+                        Rectangle { horizontal-stretch: 1; }
+
+                        Text {
+                            text: "拖动移动 · 拖右下角改尺寸 · 双击文字改内容";
+                            color: Theme.text-dim;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                Canvas {
+                    vertical-stretch: 1;
+                    page-w: root.page-w;
+                    page-h: root.page-h;
+                    elements: root.elements;
+                    strokes: root.strokes;
+                    interactive: root.canvas-interactive;
+                    can-draw: root.can-draw;
+                    empty-hint: root.canvas-hint;
+                    editing-id: root.editing-id;
+                    editing-text <=> root.editing-text;
+                    edit-x: root.edit-x;
+                    edit-y: root.edit-y;
+                    edit-w: root.edit-w;
+                    edit-h: root.edit-h;
+                    canvas-pointer(kind, x, y) => { root.canvas-pointer(kind, x / 1px, y / 1px); }
+                    edit-commit(id, text) => { root.edit-commit(id, text); }
+                    edit-cancel => { root.edit-cancel(); }
+                    double-clicked => { root.canvas-double-click(); }
+                }
+            }
+
+            // ---------- 右：Inspector（默认折叠） ----------
+            if root.mode != AppMode.present : Rectangle {
+                width: root.inspector-open ? 268px : 26px;
+                background: Theme.panel;
+                border-width: 1px;
+                border-color: Theme.line;
+                animate width { duration: 120ms; }
+
+                // 折叠状态：一条窄边
+                if !root.inspector-open : Rectangle {
+                    width: 26px;
+                    height: parent.height;
+                    background: Theme.panel-2;
+                    Text {
+                        text: "‹";
+                        color: Theme.text;
+                        font-size: 15px;
+                        width: 26px;
+                        height: 26px;
+                        y: 10px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "检查器";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        width: 80px;
+                        height: 20px;
+                        x: -26px;
+                        y: 44px;
+                        transform-rotation: 90deg;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.inspector-toggle(); }
+                    }
+                }
+
+                if root.inspector-open : VerticalLayout {
+                    padding-top: 8px;
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    padding-bottom: 8px;
+                    spacing: 6px;
+
+                    HorizontalLayout {
+                        height: 22px;
+                        SectionLabel {
+                            text: "检查器  INSPECTOR";
+                            horizontal-stretch: 1;
+                        }
+                        ChipButton {
+                            label: "收起 ›";
+                            clicked => { root.inspector-toggle(); }
+                        }
+                    }
+
+                    Text {
+                        height: 18px;
+                        text: root.selected-id == "" ? "未选中元素（点击画布上的元素）" : "已选中：" + root.selected-id;
+                        color: Theme.text;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+
+                    ChipButton {
+                        label: "删除此元素";
+                        enabled: root.selected-id != "";
+                        clicked => { root.delete-selected(); }
+                    }
+
+                    Rectangle { height: 1px; background: Theme.line; }
+                    SectionLabel { height: 18px; text: "音频  AUDIO"; }
+                    Text {
+                        height: 18px;
+                        text: root.has-audio ? "已载入 WAV，可播放 / 可拖动定位" : "本次演练没有音频（画面仍可回放）";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+
+                    Rectangle { height: 1px; background: Theme.line; }
+                    SectionLabel { height: 18px; text: "摄像头  CAMERA"; }
+                    Text {
+                        height: 60px;
+                        text: "V1 未实现。预留为独立轨道与 Rehearsal.audio 并列，录制接口复用 audio::Recorder trait，详见 README。";
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+
+                    Rectangle { height: 1px; background: Theme.line; }
+                    Text {
+                        vertical-stretch: 1;
+                        text: root.status;
+                        color: Theme.text-dim;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                        vertical-alignment: top;
+                    }
+                }
+            }
+        }
+
+        // ==================== 讲稿 ====================
+        ScriptPanel {
+            height: root.script-open ? 156px : 34px;
+            visible: root.mode != AppMode.present;
+            rows: root.script-rows;
+            level: root.script-level;
+            open: root.script-open;
+            can-mark: root.mode == AppMode.rehearse;
+            row-click(idx) => { root.script-row-click(idx); }
+            set-level(l) => { root.script-level-set(l); }
+            toggle => { root.script-toggle(); }
+        }
+
+        // ==================== 时间轴 ====================
+        TimelineBar {
+            height: 78px;
+            visible: root.mode != AppMode.present;
+            ticks: root.ticks;
+            wave-path: root.wave-path;
+            has-audio: root.has-audio;
+            playing: root.playing;
+            position <=> root.position;
+            duration: root.duration;
+            time-label: root.position-label;
+            duration-label: root.duration-label;
+            status: root.status;
+            rehearsal-index: root.rehearsal-index;
+            rehearsal-count: root.rehearsal-count;
+            rehearsal-name: root.rehearsal-name;
+            seek(t) => { root.seek(t); }
+            play-toggle => { root.play-toggle(); }
+            stop => { root.stop-playback(); }
+            rehearsal-prev => { root.rehearsal-prev(); }
+            rehearsal-next => { root.rehearsal-next(); }
+        }
+
+        // ==================== 演讲模式提示条 ====================
+        if root.mode == AppMode.present : Rectangle {
+            height: 26px;
+            background: #0b0e13;
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.status;
+                color: Theme.text-dim;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
