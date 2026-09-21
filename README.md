@@ -21,6 +21,21 @@ cargo run -- --reset            # 清空项目目录并重建演示项目
 cargo run -- --help             # 命令行参数 + 快捷键帮助
 ```
 
+### 用 `just` 构建与运行
+
+仓库自带 [`justfile`](justfile)（[just](https://github.com/casey/just) 1.58 实测通过）：
+
+```bash
+just build            # 只构建：等价于 cargo build
+just run              # 只运行「已构建」的产物，不触发构建
+just run --selftest   # 参数透传给应用（写成 just run -- --selftest 也可以）
+just run-release      # 运行 release 产物（先执行 just build-release）
+just test / just check / just clean
+```
+
+> `just run` **不做任何构建**：它直接执行 `target/debug/slidetrace.exe`。
+> 产物不存在时会立即报错并提示先执行 `just build`（退出码 1），而不是悄悄替你构建。
+
 ### 开发/自动化用的额外参数
 
 | 参数 | 作用 |
